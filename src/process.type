@@ -1,0 +1,31 @@
+# Process policy remains independent of the native spawn implementation.
+module.exports = ({fs, path, spawn, relativeResource, nearestExisting, inside, ProcessBoundaryError}) ->
+  argsMatch = (pattern, args) -> pattern.length is args.length and pattern.every (value, index) -> value is '*' or value is args[index]
+  cwdMatch = (roots, cwd) -> roots.some (root) -> cwd is root or cwd.startsWith "#{root}/"
+  class PackageProcess
+    constructor: (@host, @owner) ->
+    spawn: (executable, args = [], options = {}) ->
+      @host.enforce @owner, 'process', 'spawn', executable
+      throw new ProcessBoundaryError 'Shell execution is not allowed' if options.shell
+      if args.some (arg) -> typeof arg isnt 'string' or arg.includes('\0')
+        throw new ProcessBoundaryError 'Process arguments must be safe strings'
+      cwd = relativeResource(options.cwd or '.')
+      env = options.env or {}
+      grant = @host.grantsFor(@owner).process.find (item) ->
+        item.executable is executable and argsMatch(item.args, args) and cwdMatch(item.cwd, cwd) and Object.keys(env).every (key) -> key in item.env
+      throw new ProcessBoundaryError 'Executable, arguments, cwd or environment are outside the declared process grant' unless grant
+      packageRoot = fs.realpathSync @host.packageRoot(@owner)
+      lexicalCwd = path.resolve packageRoot, cwd
+      cwdRoot = grant.cwd.find (root) -> cwd is root or cwd.startsWith "#{root}/"
+      throw new ProcessBoundaryError 'Process cwd is outside the declared roots' unless cwdRoot
+      realCwdRoot = nearestExisting path.resolve(packageRoot, cwdRoot)
+      realCwd = fs.realpathSync lexicalCwd
+      unless inside(packageRoot, realCwdRoot) and inside(realCwdRoot, realCwd)
+        throw new ProcessBoundaryError 'Resolved process cwd escapes the package grant'
+      child = spawn executable, args, {...options, cwd: lexicalCwd, env: {...env}, shell: false}
+      scope = @host.activeScope @owner
+      unless scope
+        child.kill()
+        throw new ProcessBoundaryError 'Package process requires an active EffectScope'
+      @host.trackProcess scope, child, path.basename(executable)
+      child

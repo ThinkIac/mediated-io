@@ -1,0 +1,31 @@
+{
+  "name": "@thinkiac/module-mediated-io",
+  "version": "0.2.0",
+  "description": "Capability-mediated I/O authored in LogosType with an optional Node adapter",
+  "main": "index.cjs",
+  "files": [
+    "src",
+    "dist",
+    "scripts",
+    "*.cjs",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ThinkIac/mediated-io.git"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node scripts/build.cjs",
+    "prepare": "npm run build",
+    "test": "npm run build && node --test test/*.test.cjs"
+  },
+  "devDependencies": {
+    "logostype": "git+https://github.com/ThinkIac/LogosType.git#acdcc6032ab94219e0d4a4d25b1538fb55fa19cf"
+  }
+}

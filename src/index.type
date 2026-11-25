@@ -1,0 +1,9 @@
+# Optional Node adapter; core.cjs does not load these native APIs.
+{createMediatedIO, createEventClient, createDispatcher} = require './core.cjs'
+module.exports = {...createMediatedIO({
+  fs: require 'node:fs'
+  path: require 'node:path'
+  spawn: require('node:child_process').spawn
+  URL: globalThis.URL
+  fetch: (...args) -> globalThis.fetch ...args
+}), createEventClient, createDispatcher}

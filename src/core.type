@@ -1,0 +1,86 @@
+# Platform capabilities are injected; importing the core performs no native I/O.
+class ResourceBoundaryError extends Error
+  constructor: (message) ->
+    super message
+    @name = 'ResourceBoundaryError'
+    @code = 'RESOURCE_BOUNDARY_DENIED'
+class ProcessBoundaryError extends Error
+  constructor: (message) ->
+    super message
+    @name = 'ProcessBoundaryError'
+    @code = 'PROCESS_BOUNDARY_DENIED'
+class SecretHandle
+  constructor: (@name, resolve) ->
+    Object.defineProperty this, 'withValue', value: (consumer) ->
+      throw new TypeError 'Secret consumer must be a function' unless typeof consumer is 'function'
+      consumer await resolve()
+    Object.freeze this
+  toString: -> '[REDACTED]'
+  toJSON: -> '[REDACTED]'
+
+createMediatedIO = ({fs, path, spawn, URL: URLClass, fetch: defaultFetch}) ->
+  relativeResource = (input) ->
+    unless typeof input is 'string' and input and not path.isAbsolute(input) and not input.includes('\0')
+      throw new ResourceBoundaryError 'Path must be a non-empty package-relative path'
+    normalized = input.replace /\\/g, '/'
+    throw new ResourceBoundaryError 'Path traversal is not allowed' if '..' in normalized.split('/')
+    clean = path.posix.normalize(normalized).replace /^\.\//, ''
+    throw new ResourceBoundaryError 'Path escapes the package' if not clean or clean.startsWith('../')
+    clean
+  inside = (root, candidate) ->
+    relative = path.relative root, candidate
+    relative is '' or (not relative.startsWith('..') and not path.isAbsolute(relative))
+  nearestExisting = (input) ->
+    current = input
+    until fs.existsSync current
+      parent = path.dirname current
+      throw new ResourceBoundaryError 'No existing parent for path' if parent is current
+      current = parent
+    fs.realpathSync current
+  class PackageFiles
+    constructor: (@host, @owner) ->
+    resolve: (input, operation) ->
+      resource = relativeResource input
+      @host.enforce @owner, 'filesystem', operation, resource
+      packageRoot = fs.realpathSync @host.packageRoot(@owner)
+      lexical = path.resolve packageRoot, resource
+      throw new ResourceBoundaryError 'Path escapes the package' unless inside packageRoot, lexical
+      grant = @host.grantsFor(@owner).files.find (item) ->
+        (resource is item.root or resource.startsWith("#{item.root}/")) and (if operation is 'read' then item.access isnt 'write' else item.access isnt 'read')
+      throw new ResourceBoundaryError 'No matching filesystem root' unless grant
+      realRoot = nearestExisting path.resolve(packageRoot, grant.root)
+      throw new ResourceBoundaryError 'Granted root resolves outside the package' unless inside packageRoot, realRoot
+      realTarget = if operation is 'read' or fs.existsSync(lexical) then fs.realpathSync(lexical) else nearestExisting(path.dirname(lexical))
+      throw new ResourceBoundaryError 'Resolved path escapes the granted root' unless inside realRoot, realTarget
+      lexical
+    readFile: (input, options) -> await fs.promises.readFile @resolve(input, 'read'), options
+    readdir: (input, options) -> await fs.promises.readdir @resolve(input, 'read'), options
+    writeFile: (input, data, options) -> await fs.promises.writeFile @resolve(input, 'write'), data, options
+    mkdir: (input, options) -> await fs.promises.mkdir @resolve(input, 'write'), options
+  class PackageSecrets
+    constructor: (@host, @owner) ->
+    get: (name) ->
+      @host.enforce @owner, 'secrets', 'read', name
+      new SecretHandle name, => @host.resolveSecret name, @owner
+  class PackageNetwork
+    constructor: (@host, @owner) ->
+    fetch: (input, init = {}) ->
+      url = new URLClass input.toString()
+      throw new ResourceBoundaryError 'Credentials in network URLs are not allowed' if url.username or url.password
+      method = String(init.method or 'GET').toUpperCase()
+      fetcher = @host.fetch or defaultFetch
+      throw new Error 'No fetch implementation is available' unless typeof fetcher is 'function'
+      for redirects in [0..10]
+        @host.enforce @owner, 'network', 'request', url.origin, {method, redirect: redirects > 0}
+        response = await fetcher url, {...init, method, redirect: 'manual'}
+        return response unless response.status in [301, 302, 303, 307, 308]
+        location = response.headers.get 'location'
+        return response unless location
+        url = new URLClass location, url
+        throw new ResourceBoundaryError 'Credentials in redirect URLs are not allowed' if url.username or url.password
+      throw new ResourceBoundaryError 'Network redirect limit exceeded'
+
+  PackageProcess = require("./process.cjs") {fs, path, spawn, relativeResource, nearestExisting, inside, ProcessBoundaryError}
+  {PackageFiles, PackageNetwork, PackageProcess, PackageSecrets, ProcessBoundaryError, ResourceBoundaryError, SecretHandle}
+
+module.exports = {createMediatedIO, SecretHandle, ResourceBoundaryError, ProcessBoundaryError, ...require("./events.cjs")}

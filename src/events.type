@@ -1,0 +1,23 @@
+# Transport supplied by the host, never a global bus.
+createEventClient = (request) ->
+  readText: (path) -> request 'files::event:readText', {path}
+  writeText: (path, text) -> request 'files::event:writeText', {path, text}
+  list: (path) -> request 'files::event:list', {path}
+  mkdir: (path, recursive = false) -> request 'files::event:mkdir', {path, recursive}
+
+createDispatcher = (context) -> (event, payload = {}) ->
+  unless event in ['files::event:readText', 'files::event:writeText', 'files::event:list', 'files::event:mkdir']
+    throw new Error "Unsupported I/O event: #{event}"
+  throw new TypeError 'path must be a string' unless typeof payload.path is 'string'
+  switch event
+    when 'files::event:readText' then await context.files.readFile payload.path, 'utf8'
+    when 'files::event:writeText'
+      throw new TypeError 'text must be a string' unless typeof payload.text is 'string'
+      await context.files.writeFile payload.path, payload.text, 'utf8'
+      null
+    when 'files::event:list' then await context.files.readdir payload.path
+    when 'files::event:mkdir'
+      throw new TypeError 'recursive must be boolean' unless typeof (payload.recursive ? false) is 'boolean'
+      await context.files.mkdir payload.path, recursive: payload.recursive ? false
+      null
+module.exports = {createEventClient, createDispatcher}
